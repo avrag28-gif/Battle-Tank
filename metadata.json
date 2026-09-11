@@ -1,0 +1,6 @@
+{
+  "name": "TikTok Live 3D Tank Battle",
+  "description": "Interactive 2.5D/3D Tank Battle live stream game for TikTok Live with 5-player slots, real-time WebSocket server, gift interactions, tank evolutions, and arena themes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
