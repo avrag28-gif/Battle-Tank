@@ -9,6 +9,9 @@ class SoundEngine {
   public bgmEnabled: boolean = true;
   private bgmInterval: any = null;
   private bgmStep: number = 0;
+  private cachedNoiseBuffer?: AudioBuffer;
+  private lastLaserShotTime: number = 0;
+  private lastHitSoundTime: number = 0;
 
   private initCtx() {
     if (!this.ctx) {
@@ -18,8 +21,22 @@ class SoundEngine {
       }
     }
     if (this.ctx && this.ctx.state === 'suspended') {
-      this.ctx.resume();
+      this.ctx.resume().catch(() => {});
     }
+  }
+
+  private getNoiseBuffer(): AudioBuffer | null {
+    if (!this.ctx) return null;
+    if (!this.cachedNoiseBuffer) {
+      const bufferSize = Math.floor(this.ctx.sampleRate * 0.1);
+      const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+      this.cachedNoiseBuffer = buffer;
+    }
+    return this.cachedNoiseBuffer;
   }
 
   /**
@@ -35,7 +52,7 @@ class SoundEngine {
     this.bgmInterval = setInterval(() => {
       if (!this.enabled || !this.bgmEnabled || !this.ctx) return;
       if (this.ctx.state === 'suspended') {
-        this.ctx.resume();
+        this.ctx.resume().catch(() => {});
       }
 
       const now = this.ctx.currentTime;
@@ -57,7 +74,7 @@ class SoundEngine {
         filter.frequency.setValueAtTime(650, now);
         filter.frequency.exponentialRampToValueAtTime(140, now + 0.12);
 
-        gain.gain.setValueAtTime(0.18, now);
+        gain.gain.setValueAtTime(0.85, now); // Boosted Bassline (from 0.38)
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
 
         osc.connect(filter);
@@ -77,7 +94,7 @@ class SoundEngine {
         kickOsc.frequency.setValueAtTime(140, now);
         kickOsc.frequency.exponentialRampToValueAtTime(30, now + 0.09);
 
-        kickGain.gain.setValueAtTime(0.25, now);
+        kickGain.gain.setValueAtTime(0.95, now); // Boosted Kick (from 0.55)
         kickGain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
 
         kickOsc.connect(kickGain);
@@ -87,29 +104,28 @@ class SoundEngine {
         kickOsc.stop(now + 0.09);
       }
 
-      // 3. Hi-Hat White Noise Pulse
+      // 3. Hi-Hat White Noise Pulse with Cached Buffer
       if (step % 2 === 1) {
-        const bufferSize = this.ctx.sampleRate * 0.035;
-        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-        const data = buffer.getChannelData(0);
-        for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+        const noiseBuf = this.getNoiseBuffer();
+        if (noiseBuf) {
+          const noise = this.ctx.createBufferSource();
+          noise.buffer = noiseBuf;
 
-        const noise = this.ctx.createBufferSource();
-        noise.buffer = buffer;
+          const filter = this.ctx.createBiquadFilter();
+          filter.type = 'highpass';
+          filter.frequency.value = 5500;
 
-        const filter = this.ctx.createBiquadFilter();
-        filter.type = 'highpass';
-        filter.frequency.value = 5500;
+          const gain = this.ctx.createGain();
+          gain.gain.setValueAtTime(0.45, now); // Boosted Hi-Hat (from 0.18)
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.035);
 
-        const gain = this.ctx.createGain();
-        gain.gain.setValueAtTime(0.09, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.035);
+          noise.connect(filter);
+          filter.connect(gain);
+          gain.connect(this.ctx.destination);
 
-        noise.connect(filter);
-        filter.connect(gain);
-        gain.connect(this.ctx.destination);
-
-        noise.start(now);
+          noise.start(now);
+          noise.stop(now + 0.035);
+        }
       }
 
       // 4. Ambient Arpeggio Lead (Pentatonic E Minor)
@@ -123,7 +139,7 @@ class SoundEngine {
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(leadFreq, now);
 
-        gain.gain.setValueAtTime(0.10, now);
+        gain.gain.setValueAtTime(0.55, now); // Boosted Lead Arpeggio (from 0.22)
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
 
         osc.connect(gain);
@@ -153,7 +169,7 @@ class SoundEngine {
   }
 
   /**
-   * CANNON FIRING / LASER SHOT (Tembakan Meriam)
+   * CANNON FIRING (Tembakan Meriam Tank Realistis)
    */
   public playLaserShot(evolutionLevel: number = 1) {
     if (!this.enabled) return;
@@ -162,42 +178,74 @@ class SoundEngine {
 
     const now = this.ctx.currentTime;
 
-    // Laser Pitch Sweep
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-
-    const startFreq = 700 + evolutionLevel * 250;
-    const endFreq = 90;
-
-    osc.type = evolutionLevel >= 3 ? 'sawtooth' : 'square';
-    osc.frequency.setValueAtTime(startFreq, now);
-    osc.frequency.exponentialRampToValueAtTime(endFreq, now + 0.18);
-
-    gain.gain.setValueAtTime(0.25, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
-
-    osc.connect(gain);
-    gain.connect(this.ctx.destination);
-
-    osc.start(now);
-    osc.stop(now + 0.18);
-
-    // Punchy Cannon Thump
+    // Layer 1: Heavy Kinetic Bass Cannon Boom (Thump)
     const thumpOsc = this.ctx.createOscillator();
     const thumpGain = this.ctx.createGain();
 
-    thumpOsc.type = 'sine';
-    thumpOsc.frequency.setValueAtTime(160, now);
-    thumpOsc.frequency.exponentialRampToValueAtTime(35, now + 0.12);
+    thumpOsc.type = 'triangle';
+    // Higher evolution levels get slightly deeper, heavier sounds
+    const startFreq = 220 - evolutionLevel * 10;
+    const endFreq = 20;
 
-    thumpGain.gain.setValueAtTime(0.35, now);
-    thumpGain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+    thumpOsc.frequency.setValueAtTime(startFreq, now);
+    thumpOsc.frequency.exponentialRampToValueAtTime(endFreq, now + 0.15);
+
+    // Heavy direct low-end thump
+    thumpGain.gain.setValueAtTime(0.95, now); // Max low-end punch
+    thumpGain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
 
     thumpOsc.connect(thumpGain);
     thumpGain.connect(this.ctx.destination);
 
     thumpOsc.start(now);
-    thumpOsc.stop(now + 0.12);
+    thumpOsc.stop(now + 0.18);
+
+    // Layer 2: Gunpowder Explosion Blast (Filtered White Noise Crack)
+    const noiseBuf = this.getNoiseBuffer();
+    if (noiseBuf) {
+      const noiseSource = this.ctx.createBufferSource();
+      noiseSource.buffer = noiseBuf;
+
+      const noiseFilter = this.ctx.createBiquadFilter();
+      noiseFilter.type = 'bandpass';
+      // Evolution level modifies the frequency character of the blast
+      const filterFreq = Math.max(400, 1200 - evolutionLevel * 120);
+      noiseFilter.frequency.setValueAtTime(filterFreq, now);
+      noiseFilter.Q.setValueAtTime(2.0, now);
+
+      const noiseGain = this.ctx.createGain();
+      noiseGain.gain.setValueAtTime(0.85, now); // Louder blast crack
+      noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+
+      noiseSource.connect(noiseFilter);
+      noiseFilter.connect(noiseGain);
+      noiseGain.connect(this.ctx.destination);
+
+      noiseSource.start(now);
+      noiseSource.stop(now + 0.14);
+    }
+
+    // Layer 3: Mechanical Metallic Shell Crack (Releasing sound)
+    const ringOsc = this.ctx.createOscillator();
+    const ringGain = this.ctx.createGain();
+
+    ringOsc.type = 'sawtooth';
+    ringOsc.frequency.setValueAtTime(450, now);
+    ringOsc.frequency.exponentialRampToValueAtTime(80, now + 0.08);
+
+    const ringFilter = this.ctx.createBiquadFilter();
+    ringFilter.type = 'lowpass';
+    ringFilter.frequency.value = 800;
+
+    ringGain.gain.setValueAtTime(0.45, now); // Louder metallic ring
+    ringGain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+
+    ringOsc.connect(ringFilter);
+    ringFilter.connect(ringGain);
+    ringGain.connect(this.ctx.destination);
+
+    ringOsc.start(now);
+    ringOsc.stop(now + 0.08);
   }
 
   /**
@@ -218,7 +266,7 @@ class SoundEngine {
     clangOsc.frequency.setValueAtTime(2200, now);
     clangOsc.frequency.exponentialRampToValueAtTime(450, now + 0.14);
 
-    clangGain.gain.setValueAtTime(0.5, now);
+    clangGain.gain.setValueAtTime(0.90, now); // Louder metallic clang
     clangGain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
 
     clangOsc.connect(clangGain);
@@ -235,7 +283,7 @@ class SoundEngine {
     bassOsc.frequency.setValueAtTime(240, now);
     bassOsc.frequency.exponentialRampToValueAtTime(40, now + 0.18);
 
-    bassGain.gain.setValueAtTime(0.55, now);
+    bassGain.gain.setValueAtTime(0.95, now); // Louder armor thud
     bassGain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
 
     bassOsc.connect(bassGain);
@@ -260,7 +308,7 @@ class SoundEngine {
     filter.frequency.setValueAtTime(1800, now);
 
     const noiseGain = this.ctx.createGain();
-    noiseGain.gain.setValueAtTime(0.45, now);
+    noiseGain.gain.setValueAtTime(0.85, now); // Louder spark crackle
     noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
 
     noise.connect(filter);
@@ -287,7 +335,7 @@ class SoundEngine {
     bassOsc.frequency.setValueAtTime(200, now);
     bassOsc.frequency.exponentialRampToValueAtTime(20, now + 0.55);
 
-    bassGain.gain.setValueAtTime(0.85, now);
+    bassGain.gain.setValueAtTime(1.0, now); // Max power explosion boom
     bassGain.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
 
     bassOsc.connect(bassGain);
@@ -313,7 +361,7 @@ class SoundEngine {
     filter.frequency.exponentialRampToValueAtTime(35, now + 0.5);
 
     const noiseGain = this.ctx.createGain();
-    noiseGain.gain.setValueAtTime(0.75, now);
+    noiseGain.gain.setValueAtTime(1.0, now); // Max power explosion blast noise
     noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
 
     whiteNoise.connect(filter);
@@ -341,7 +389,7 @@ class SoundEngine {
       osc.frequency.value = freq;
 
       const startTime = this.ctx.currentTime + idx * 0.06;
-      gain.gain.setValueAtTime(0.22, startTime);
+      gain.gain.setValueAtTime(0.65, startTime); // Louder heal sound
       gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.18);
 
       osc.connect(gain);
@@ -370,7 +418,7 @@ class SoundEngine {
       osc.frequency.value = freq;
 
       const startTime = this.ctx.currentTime + idx * 0.08;
-      gain.gain.setValueAtTime(0.28, startTime);
+      gain.gain.setValueAtTime(0.75, startTime); // Louder level up arpeggio
       gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.28);
 
       osc.connect(gain);
@@ -399,7 +447,7 @@ class SoundEngine {
       osc.frequency.value = freq;
 
       const startTime = this.ctx.currentTime + idx * 0.07;
-      gain.gain.setValueAtTime(0.25, startTime);
+      gain.gain.setValueAtTime(0.70, startTime); // Louder join notification
       gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.2);
 
       osc.connect(gain);
@@ -427,7 +475,7 @@ class SoundEngine {
     osc.frequency.setValueAtTime(150, now);
     osc.frequency.exponentialRampToValueAtTime(1200, now + 0.35);
 
-    gain.gain.setValueAtTime(0.3, now);
+    gain.gain.setValueAtTime(0.85, now); // Louder special attack whistle
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
 
     osc.connect(gain);
@@ -451,7 +499,7 @@ class SoundEngine {
     osc.type = 'sine';
     osc.frequency.value = highPitch ? 880 : 440;
 
-    gain.gain.setValueAtTime(0.25, this.ctx.currentTime);
+    gain.gain.setValueAtTime(0.70, this.ctx.currentTime); // Louder match countdown ticker
     gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.12);
 
     osc.connect(gain);
@@ -485,7 +533,7 @@ class SoundEngine {
       osc.frequency.value = note.freq;
 
       const startTime = this.ctx.currentTime + timeOffset;
-      gain.gain.setValueAtTime(0.35, startTime);
+      gain.gain.setValueAtTime(0.85, startTime); // Louder victory tune
       gain.gain.exponentialRampToValueAtTime(0.001, startTime + note.duration);
 
       osc.connect(gain);

@@ -258,8 +258,9 @@ export class GameEngine {
 
   // --- PLATFORM EVENT HANDLER ---
   public queueEvent(event: InternalGameEvent) {
-    // Basic deduplication / priority insertion
-    this.eventQueue.push(event);
+    // Process event immediately with ZERO latency
+    this.handleSingleEvent(event);
+    this.notifyStateChange();
   }
 
   private processEventQueue() {
@@ -790,6 +791,9 @@ export class GameEngine {
 
     switch (this.state) {
       case 'WAITING': {
+        // Update Projectiles (so they fly & despawn even when alone)
+        this.updateProjectilesAndCollisions(dt);
+
         // If 2+ players present, trigger countdown automatically
         if (this.players.size >= 2) {
           this.startCountdown();
@@ -799,6 +803,10 @@ export class GameEngine {
 
       case 'COUNTDOWN': {
         this.timerSec -= dt;
+        
+        // Update Projectiles during countdown
+        this.updateProjectilesAndCollisions(dt);
+
         if (this.timerSec <= 0) {
           this.state = 'PLAYING';
           this.timerSec = this.config.MATCH_DURATION_SEC;
@@ -852,6 +860,11 @@ export class GameEngine {
   private updateProjectilesAndCollisions(dt: number) {
     const nextProjectiles: Projectile[] = [];
 
+    // Safety limit: if there are too many projectiles, take only the most recent ones
+    if (this.projectiles.length > 200) {
+      this.projectiles = this.projectiles.slice(-200);
+    }
+
     for (const proj of this.projectiles) {
       // Advance position
       proj.position.x += proj.velocity.x * dt;
@@ -864,82 +877,84 @@ export class GameEngine {
 
       let hit = false;
 
-      // Collision check against alive enemy tanks
-      for (const target of this.players.values()) {
-        if (target.platformUserId === proj.ownerId || target.status !== 'ALIVE') continue;
+      // Collision check against alive enemy tanks - ONLY when the match is in active PLAYING state
+      if (this.state === 'PLAYING') {
+        for (const target of this.players.values()) {
+          if (target.platformUserId === proj.ownerId || target.status !== 'ALIVE') continue;
 
-        const dx = target.position.x - proj.position.x;
-        const dy = target.position.y - proj.position.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+          const dx = target.position.x - proj.position.x;
+          const dy = target.position.y - proj.position.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
 
-        // Tank hit radius ~ 1.2 units
-        if (dist < 1.3) {
-          hit = true;
+          // Tank hit radius ~ 1.2 units
+          if (dist < 1.3) {
+            hit = true;
 
-          // Apply damage
-          const attacker = this.players.get(proj.ownerId);
-          if (attacker) {
-            attacker.damageDealt += proj.damage;
-          }
+            // Apply damage
+            const attacker = this.players.get(proj.ownerId);
+            if (attacker) {
+              attacker.damageDealt += proj.damage;
+            }
 
-          target.hearts = Math.max(0, target.hearts - proj.damage);
-          target.isHitFlashing = true;
-          setTimeout(() => {
-            target.isHitFlashing = false;
-          }, 300);
+            target.hearts = Math.max(0, target.hearts - proj.damage);
+            target.isHitFlashing = true;
+            setTimeout(() => {
+              target.isHitFlashing = false;
+            }, 300);
 
-          // Hit visual effect
-          this.addEffect({
-            id: `HIT_${Date.now()}_${Math.random()}`,
-            type: 'HIT',
-            position: { x: target.position.x, y: target.position.y },
-            color: '#ff3b30',
-            durationMs: 500,
-            createdAt: Date.now(),
-            text: `-${proj.damage} ❤️`,
-          });
-
-          // Check if target died
-          if (target.hearts <= 0) {
-            target.status = 'DEAD';
-            target.deaths += 1;
-
+            // Hit visual effect
             this.addEffect({
-              id: `EXPL_${Date.now()}_${Math.random()}`,
-              type: 'EXPLOSION',
+              id: `HIT_${Date.now()}_${Math.random()}`,
+              type: 'HIT',
               position: { x: target.position.x, y: target.position.y },
-              color: '#ff8c00',
-              durationMs: 1200,
+              color: '#ff3b30',
+              durationMs: 500,
               createdAt: Date.now(),
-              text: 'ELIMINATED!',
+              text: `-${proj.damage} ❤️`,
             });
 
-            if (attacker) {
-              attacker.kills += 1;
-              attacker.score += 150;
+            // Check if target died
+            if (target.hearts <= 0) {
+              target.status = 'DEAD';
+              target.deaths += 1;
 
-              // Real-time update to global stat kills
-              const gStat = this.globalStats.get(attacker.platformUserId);
-              if (gStat) {
-                gStat.totalKills += 1;
-                gStat.totalDamage += proj.damage;
-                gStat.highestEvolution = Math.max(gStat.highestEvolution, attacker.evolutionLevel) as EvolutionLevel;
-                gStat.lastPlayedAt = Date.now();
+              this.addEffect({
+                id: `EXPL_${Date.now()}_${Math.random()}`,
+                type: 'EXPLOSION',
+                position: { x: target.position.x, y: target.position.y },
+                color: '#ff8c00',
+                durationMs: 1200,
+                createdAt: Date.now(),
+                text: 'ELIMINATED!',
+              });
+
+              if (attacker) {
+                attacker.kills += 1;
+                attacker.score += 150;
+
+                // Real-time update to global stat kills
+                const gStat = this.globalStats.get(attacker.platformUserId);
+                if (gStat) {
+                  gStat.totalKills += 1;
+                  gStat.totalDamage += proj.damage;
+                  gStat.highestEvolution = Math.max(gStat.highestEvolution, attacker.evolutionLevel) as EvolutionLevel;
+                  gStat.lastPlayedAt = Date.now();
+                }
+
+                this.addFeedItem(
+                  'SYSTEM',
+                  `💀 @${attacker.username} KILLED @${target.username}! (${attacker.kills} KILLS)`,
+                  attacker.username,
+                  attacker.color
+                );
+
+                // Check for Tank Evolution
+                this.checkAndTriggerEvolution(attacker);
               }
-
-              this.addFeedItem(
-                'SYSTEM',
-                `💀 @${attacker.username} KILLED @${target.username}! (${attacker.kills} KILLS)`,
-                attacker.username,
-                attacker.color
-              );
-
-              // Check for Tank Evolution
-              this.checkAndTriggerEvolution(attacker);
             }
-          }
 
-          break; // Projectile destroyed on hit
+            break; // Projectile destroyed on hit
+          }
         }
       }
 

@@ -206,6 +206,27 @@ const getFallbackAvatar = (username: string, color: string) => {
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 };
 
+/**
+ * Universal Three.js Memory & GPU Resource Disposal Helper
+ * Prevents WebGL memory leaks during rapid projectile and FX lifecycles
+ */
+function disposeThreeObject(obj: THREE.Object3D) {
+  obj.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      if (child.geometry) {
+        child.geometry.dispose();
+      }
+      if (child.material) {
+        if (Array.isArray(child.material)) {
+          child.material.forEach((m) => m && typeof m.dispose === 'function' && m.dispose());
+        } else if (typeof child.material.dispose === 'function') {
+          child.material.dispose();
+        }
+      }
+    }
+  });
+}
+
 export const Battlefield3D: React.FC<Battlefield3DProps> = ({ gameState }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -223,7 +244,7 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({ gameState }) => {
   const gridHelperRef = useRef<THREE.GridHelper | null>(null);
   const perimeterRef = useRef<ArenaPerimeterObjects | null>(null);
 
-  const prevEffectsCountRef = useRef<number>(0);
+  const processedEffectIdsRef = useRef<Set<string>>(new Set());
   const cameraShakeRef = useRef<number>(0);
   const activeFXListRef = useRef<Array<{ update: (dt: number) => boolean }>>([]);
   const recoilMapRef = useRef<Map<string, number>>(new Map());
@@ -531,13 +552,23 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({ gameState }) => {
       observer.disconnect();
       if (rendererRef.current && rendererRef.current.domElement) {
         rendererRef.current.domElement.remove();
+        rendererRef.current.dispose();
       }
+      tankGroupMapRef.current.forEach((g) => disposeThreeObject(g));
       tankGroupMapRef.current.clear();
+      projectileGroupMapRef.current.forEach((g) => disposeThreeObject(g));
       projectileGroupMapRef.current.clear();
+      slotHologramMapRef.current.forEach((g) => disposeThreeObject(g));
       slotHologramMapRef.current.clear();
+      if (groundMeshRef.current) {
+        disposeThreeObject(groundMeshRef.current);
+      }
       if (perimeterRef.current) {
         perimeterRef.current.dispose();
         perimeterRef.current = null;
+      }
+      if (sceneRef.current) {
+        disposeThreeObject(sceneRef.current);
       }
       activeFXListRef.current = [];
       sceneRef.current = null;
@@ -581,6 +612,7 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({ gameState }) => {
     tankGroupMapRef.current.forEach((group, userId) => {
       if (!activeUserIds.has(userId)) {
         scene.remove(group);
+        disposeThreeObject(group);
         tankGroupMapRef.current.delete(userId);
       }
     });
@@ -594,6 +626,7 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({ gameState }) => {
       if (!tankGroup || tankGroup.userData.evolutionLevel !== player.evolutionLevel || tankGroup.parent !== scene) {
         if (tankGroup && tankGroup.parent) {
           tankGroup.parent.remove(tankGroup);
+          disposeThreeObject(tankGroup);
         }
         tankGroup = createTankMeshGroup(player);
         tankGroupMapRef.current.set(player.platformUserId, tankGroup);
@@ -671,6 +704,7 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({ gameState }) => {
     projectileGroupMapRef.current.forEach((mesh, projId) => {
       if (!activeProjIds.has(projId)) {
         scene.remove(mesh);
+        disposeThreeObject(mesh);
         projectileGroupMapRef.current.delete(projId);
       }
     });
@@ -696,51 +730,58 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({ gameState }) => {
       }
     }
 
-      // 3D Visual Particle FX & Audio Cues Trigger
-      if (gameState.effects.length > prevEffectsCountRef.current) {
-        for (let i = prevEffectsCountRef.current; i < gameState.effects.length; i++) {
-          const effect = gameState.effects[i];
-          if (effect && sceneRef.current) {
-            const { x, y } = effect.position;
-            const color = effect.color || '#ffffff';
+    // 3D Visual Particle FX & Audio Cues Trigger by Effect ID
+    const currentEffectIds = new Set<string>();
+    for (const effect of gameState.effects) {
+      currentEffectIds.add(effect.id);
+      if (!processedEffectIdsRef.current.has(effect.id)) {
+        processedEffectIdsRef.current.add(effect.id);
+        if (sceneRef.current) {
+          const { x, y } = effect.position;
+          const color = effect.color || '#ffffff';
 
-            if (effect.type === 'EXPLOSION') {
-              soundEngine.playExplosion();
-              cameraShakeRef.current = 0.9;
-              activeFXListRef.current.push(spawn3DExplosion(sceneRef.current, x, y, color));
-              // Also trigger celebratory aerial spark burst
-              activeFXListRef.current.push(spawn3DFirework(sceneRef.current, x, 3.5, y, color));
-            } else if (effect.type === 'MUZZLE') {
-              activeFXListRef.current.push(spawn3DMuzzleFlash(sceneRef.current, x, y, color));
-              // Trigger kickback for nearby player tank
-              for (const p of gameState.players) {
-                const dx = p.position.x - x;
-                const dy = p.position.y - y;
-                if (dx * dx + dy * dy < 6.0) {
-                  recoilMapRef.current.set(p.platformUserId, 0.45);
-                  break;
-                }
+          if (effect.type === 'EXPLOSION') {
+            soundEngine.playExplosion();
+            cameraShakeRef.current = 0.9;
+            activeFXListRef.current.push(spawn3DExplosion(sceneRef.current, x, y, color));
+            activeFXListRef.current.push(spawn3DFirework(sceneRef.current, x, 3.5, y, color));
+          } else if (effect.type === 'MUZZLE') {
+            activeFXListRef.current.push(spawn3DMuzzleFlash(sceneRef.current, x, y, color));
+            for (const p of gameState.players) {
+              const dx = p.position.x - x;
+              const dy = p.position.y - y;
+              if (dx * dx + dy * dy < 6.0) {
+                recoilMapRef.current.set(p.platformUserId, 0.45);
+                break;
               }
-            } else if (effect.type === 'EVOLUTION') {
-              soundEngine.playEvolution();
-              cameraShakeRef.current = 0.8;
-              activeFXListRef.current.push(spawn3DEvolutionBeam(sceneRef.current, x, y, color));
-              activeFXListRef.current.push(spawn3DFirework(sceneRef.current, x, 5.0, y, '#ffea00'));
-            } else if (effect.type === 'HIT') {
-              soundEngine.playHit();
-              cameraShakeRef.current = 0.4;
-              activeFXListRef.current.push(spawn3DHitSparks(sceneRef.current, x, y, color));
-            } else if (effect.type === 'HEAL') {
-              soundEngine.playHeal();
-              activeFXListRef.current.push(spawn3DHealAura(sceneRef.current, x, y));
-            } else if (effect.type === 'SPAWN') {
-              activeFXListRef.current.push(spawn3DEvolutionBeam(sceneRef.current, x, y, color));
-              activeFXListRef.current.push(spawn3DFirework(sceneRef.current, x, 4.0, y, color));
             }
+          } else if (effect.type === 'EVOLUTION') {
+            soundEngine.playEvolution();
+            cameraShakeRef.current = 0.8;
+            activeFXListRef.current.push(spawn3DEvolutionBeam(sceneRef.current, x, y, color));
+            activeFXListRef.current.push(spawn3DFirework(sceneRef.current, x, 5.0, y, '#ffea00'));
+          } else if (effect.type === 'HIT') {
+            soundEngine.playHit();
+            cameraShakeRef.current = 0.4;
+            activeFXListRef.current.push(spawn3DHitSparks(sceneRef.current, x, y, color));
+          } else if (effect.type === 'HEAL') {
+            soundEngine.playHeal();
+            activeFXListRef.current.push(spawn3DHealAura(sceneRef.current, x, y));
+          } else if (effect.type === 'SPAWN') {
+            activeFXListRef.current.push(spawn3DEvolutionBeam(sceneRef.current, x, y, color));
+            activeFXListRef.current.push(spawn3DFirework(sceneRef.current, x, 4.0, y, color));
           }
         }
       }
-      prevEffectsCountRef.current = gameState.effects.length;
+    }
+
+    // Prune old processed IDs that are no longer present in server's active effects
+    const activeServerIds = new Set(gameState.effects.map((e) => e.id));
+    processedEffectIdsRef.current.forEach((id) => {
+      if (!activeServerIds.has(id)) {
+        processedEffectIdsRef.current.delete(id);
+      }
+    });
   }, [gameState]);
 
   // Find empty slot positions
@@ -1702,9 +1743,7 @@ function spawn3DFirework(scene: THREE.Scene, x: number, y: number, z: number, co
 
       if (life >= maxLife) {
         scene.remove(fxGroup);
-        flashGeo.dispose();
-        flashMat.dispose();
-        pGeo.dispose();
+        disposeThreeObject(fxGroup);
         return false;
       }
       return true;
@@ -1772,7 +1811,7 @@ function spawn3DConfettiVictory(scene: THREE.Scene) {
 
       if (life >= maxLife) {
         scene.remove(fxGroup);
-        rectGeo.dispose();
+        disposeThreeObject(fxGroup);
         return false;
       }
       return true;
@@ -1898,13 +1937,7 @@ function spawn3DExplosion(scene: THREE.Scene, x: number, z: number, colorHex: st
 
       if (life >= maxLife) {
         scene.remove(fxGroup);
-        sphereGeo.dispose();
-        sphereMat.dispose();
-        ringGeo.dispose();
-        ringMat.dispose();
-        outerRingGeo.dispose();
-        outerRingMat.dispose();
-        pGeo.dispose();
+        disposeThreeObject(fxGroup);
         return false;
       }
       return true;
@@ -1979,11 +2012,7 @@ function spawn3DMuzzleFlash(scene: THREE.Scene, x: number, z: number, colorHex: 
 
       if (life >= maxLife) {
         scene.remove(fxGroup);
-        flashGeo.dispose();
-        flashMat.dispose();
-        ringGeo.dispose();
-        ringMat.dispose();
-        sGeo.dispose();
+        disposeThreeObject(fxGroup);
         return false;
       }
       return true;
@@ -2099,15 +2128,7 @@ function spawn3DEvolutionBeam(scene: THREE.Scene, x: number, z: number, colorHex
 
       if (life >= maxLife) {
         scene.remove(fxGroup);
-        beamGeo.dispose();
-        beamMat.dispose();
-        coreBeamGeo.dispose();
-        coreBeamMat.dispose();
-        ringGeo.dispose();
-        ringMat.dispose();
-        crownGeo.dispose();
-        crownMat.dispose();
-        pGeo.dispose();
+        disposeThreeObject(fxGroup);
         return false;
       }
       return true;
@@ -2173,7 +2194,7 @@ function spawn3DHitSparks(scene: THREE.Scene, x: number, z: number, colorHex: st
 
       if (life >= maxLife) {
         scene.remove(fxGroup);
-        pGeo.dispose();
+        disposeThreeObject(fxGroup);
         return false;
       }
       return true;
@@ -2242,9 +2263,7 @@ function spawn3DHealAura(scene: THREE.Scene, x: number, z: number) {
 
       if (life >= maxLife) {
         scene.remove(fxGroup);
-        ringGeo.dispose();
-        ringMat.dispose();
-        pGeo.dispose();
+        disposeThreeObject(fxGroup);
         return false;
       }
       return true;

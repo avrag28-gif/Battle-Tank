@@ -20,7 +20,6 @@ import {
   Flame,
   Maximize2,
   Shield,
-  Smartphone,
   Sliders,
   RotateCcw
 } from 'lucide-react';
@@ -28,14 +27,12 @@ import {
 interface FullWidthArenaViewProps {
   gameState: FullGameState;
   onSendDevAction: (action: string, payload?: any) => void;
-  onSwitchToVertical: () => void;
   onSwitchToDevPanel: () => void;
 }
 
 export const FullWidthArenaView: React.FC<FullWidthArenaViewProps> = ({
   gameState,
   onSendDevAction,
-  onSwitchToVertical,
   onSwitchToDevPanel,
 }) => {
   const themeInfo = ARENA_THEMES[gameState.theme] || ARENA_THEMES.DESERT;
@@ -96,14 +93,6 @@ export const FullWidthArenaView: React.FC<FullWidthArenaViewProps> = ({
 
         {/* Quick View Switchers */}
         <div className="flex items-center gap-2">
-          <button
-            onClick={onSwitchToVertical}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-bold transition-all"
-            title="Beralih ke Tampilan Smartphone TikTok (9:16)"
-          >
-            <Smartphone className="w-3.5 h-3.5 text-amber-400" />
-            <span className="hidden md:inline">Mode HP 9:16</span>
-          </button>
           <button
             onClick={onSwitchToDevPanel}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-bold transition-all"

@@ -4,7 +4,6 @@
 
 import React, { useEffect, useState, useRef } from 'react';
 import { FullGameState } from './types/game';
-import { VerticalUI } from './components/VerticalUI';
 import { DevPanel } from './components/DevPanel';
 import { FullWidthArenaView } from './components/FullWidthArenaView';
 import { soundEngine } from './audio/soundEngine';
@@ -17,11 +16,10 @@ import {
   HelpCircle,
   Music,
   Maximize2,
-  Smartphone,
   Sliders
 } from 'lucide-react';
 
-type PageViewMode = 'FULL_ARENA' | 'VERTICAL_PHONE' | 'DEV_PANEL';
+type PageViewMode = 'FULL_ARENA' | 'DEV_PANEL';
 
 export default function App() {
   const [gameState, setGameState] = useState<FullGameState | null>(null);
@@ -69,6 +67,7 @@ export default function App() {
     loadInitial();
 
     // 2. Try EventSource (SSE) which is 100% reliable across all iFrame / proxy setups
+    let lastStreamMessageTime = 0;
     try {
       eventSource = new EventSource('/api/events');
       eventSource.onmessage = (event) => {
@@ -76,6 +75,7 @@ export default function App() {
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === 'GAME_STATE') {
+            lastStreamMessageTime = Date.now();
             setGameState(msg.data);
           }
         } catch {
@@ -104,6 +104,7 @@ export default function App() {
           try {
             const msg = JSON.parse(event.data);
             if (msg.type === 'GAME_STATE') {
+              lastStreamMessageTime = Date.now();
               setGameState(msg.data);
             }
           } catch {
@@ -127,9 +128,13 @@ export default function App() {
 
     connectWS();
 
-    // 4. Reliable high-frequency REST polling fallback (100ms) to ensure instant updates in all iframe/browser environments
+    // 4. Adaptive REST polling fallback: Only polls if SSE/WS stream is inactive for >600ms
+    // This eliminates redundant network requests and CPU overhead while preserving 100% reliability
     const pollInterval = setInterval(() => {
       if (!active) return;
+      if (Date.now() - lastStreamMessageTime < 600) {
+        return; // Stream is healthy, skip REST fetch
+      }
       fetch('/api/status')
         .then((res) => res.json())
         .then((data) => {
@@ -138,7 +143,7 @@ export default function App() {
           }
         })
         .catch(() => {});
-    }, 100);
+    }, 200);
 
     return () => {
       active = false;
@@ -244,17 +249,6 @@ export default function App() {
             <span>ARENA FULL LEBAR</span>
           </button>
           <button
-            onClick={() => setActivePage('VERTICAL_PHONE')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
-              activePage === 'VERTICAL_PHONE'
-                ? 'bg-gradient-to-r from-cyan-500 to-blue-500 text-black shadow-lg'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <Smartphone className="w-3.5 h-3.5" />
-            <span>MODE HP 9:16</span>
-          </button>
-          <button
             onClick={() => setActivePage('DEV_PANEL')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
               activePage === 'DEV_PANEL'
@@ -308,64 +302,11 @@ export default function App() {
         <FullWidthArenaView
           gameState={gameState}
           onSendDevAction={handleSendDevAction}
-          onSwitchToVertical={() => setActivePage('VERTICAL_PHONE')}
           onSwitchToDevPanel={() => setActivePage('DEV_PANEL')}
         />
       )}
 
-      {/* PAGE 2: VERTICAL PHONE STREAM SIMULATOR (9:16 Frame + Side Panel) */}
-      {activePage === 'VERTICAL_PHONE' && (
-        <main className="w-full max-w-6xl p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          <div className="lg:col-span-7 flex justify-center">
-            <VerticalUI gameState={gameState} />
-          </div>
-
-          <div className="lg:col-span-5 flex flex-col gap-4">
-            <DevPanel
-              gameState={gameState}
-              onSendDevAction={handleSendDevAction}
-              onToggleBotMode={handleToggleBotMode}
-              onConnectTikTok={handleConnectTikTok}
-            />
-
-            {/* Quick Gift Action Legend Card */}
-            <div className="bg-slate-900 border border-slate-800/80 rounded-2xl p-4 shadow-xl space-y-2">
-              <span className="font-extrabold text-xs uppercase text-amber-400 tracking-wider flex items-center gap-1.5">
-                <Sparkles className="w-4 h-4" />
-                ATURAN GIFT TIKTOK
-              </span>
-              <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
-                <div className="bg-slate-950 p-2 rounded-lg border border-slate-800 flex items-center justify-between">
-                  <span className="text-slate-400 font-bold">MASUK ARENA:</span>
-                  <span className="font-black text-emerald-400">🐼 Panda (10)</span>
-                </div>
-                <div className="bg-slate-950 p-2 rounded-lg border border-slate-800 flex items-center justify-between">
-                  <span className="text-slate-400 font-bold">TEMBAK / SPAM:</span>
-                  <span className="font-black text-rose-400">🌹 Rose (1)</span>
-                </div>
-                <div className="bg-slate-950 p-2 rounded-lg border border-slate-800 flex items-center justify-between">
-                  <span className="text-slate-400 font-bold">ISI DARAH (+1 ❤️):</span>
-                  <span className="font-black text-emerald-400">🍩 Donut (30)</span>
-                </div>
-                <div className="bg-slate-950 p-2 rounded-lg border border-slate-800 flex items-center justify-between">
-                  <span className="text-slate-400 font-bold">2X DEMEG (10s):</span>
-                  <span className="font-black text-yellow-300">⚡ Petir (15)</span>
-                </div>
-                <div className="bg-slate-950 p-2 rounded-lg border border-slate-800 flex items-center justify-between">
-                  <span className="text-slate-400 font-bold">EVOLUSI MANUAL:</span>
-                  <span className="font-black text-purple-400">🎩 Topi Kumis (99)</span>
-                </div>
-                <div className="bg-slate-950 p-2 rounded-lg border border-slate-800 flex items-center justify-between">
-                  <span className="text-slate-400 font-bold">RESPAWN / REVIVE:</span>
-                  <span className="font-black text-amber-400">🔥 Dragon</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </main>
-      )}
-
-      {/* PAGE 3: FULL HOST CONTROLLER & GIFT SIMULATOR */}
+      {/* PAGE 2: FULL HOST CONTROLLER & GIFT SIMULATOR */}
       {activePage === 'DEV_PANEL' && (
         <main className="w-full max-w-4xl p-4 md:p-6 flex flex-col gap-6">
           <DevPanel
